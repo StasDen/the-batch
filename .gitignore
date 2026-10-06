@@ -6,4 +6,4 @@ venv/
 *.ipynb_checkpoints
 
 the_batch_vectorestore_persist_dir/
-the_batch_image_documents_store.json
+the_batch_image_documents/

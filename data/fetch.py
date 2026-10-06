@@ -97,6 +97,7 @@ class HttpxFetcher(FetcherI):
                 headers=headers,
                 cookies=cookies,
                 timeout=self.timeout,
+                follow_redirects=True,
             )
             response.raise_for_status()
             return FetchResult(

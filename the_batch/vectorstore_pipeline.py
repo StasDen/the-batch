@@ -12,7 +12,7 @@ from the_batch.batch_config import (
 from schema.documents import ImageDocument
 from store.chroma import ChromaVectorStore
 from embedding.text_embedding import SentenceTransformerTextEmbedding
-from internals.utils import save_img_docs_to_json
+from internals.utils import save_img_docs
 from internals.adapters import ChromaVectorStoreAdapter
 from the_batch.preprocessing.batch_data_loader import BatchDataLoader
 from the_batch.preprocessing.batch_preprocessor import TheBatchPreprocessor
@@ -41,14 +41,14 @@ def create_batch_vectorstore():
 
     # save image documents
     img_documents = {doc.id: doc for doc in documents if isinstance(doc, ImageDocument)}
-    save_img_docs_to_json(img_documents, THE_BATCH_IMAGE_DOCUMENTS_STORE)
+    save_img_docs(img_documents, THE_BATCH_IMAGE_DOCUMENTS_STORE)
 
     # embed documents
     embeddings_adapter = ChromaVectorStoreAdapter(
         embedding_func=SentenceTransformerTextEmbedding()
     )
     embeddings = np.vstack(
-        [embeddings_adapter.embed_query(doc.content) for doc in documents]
+        [embeddings_adapter.embed_query(doc.content) for doc in documents]  # TODO: use dwt coeffs
     )
 
     # create vectorstore and add documents
