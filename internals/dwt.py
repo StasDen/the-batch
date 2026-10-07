@@ -71,7 +71,9 @@ def dwt(
     for name, channel in channels.items():
         channel_level = _resolve_level(channel.shape, wavelet, level)
         channel_shapes[name] = (int(channel.shape[0]), int(channel.shape[1]))
-        padded = _crop_or_pad(channel, channel_level)  # _pad_for_dwt()
+        target_height, target_width = _dyadic_shape(channel.shape, channel_level)
+        # "edge" avoids a hard black border that would create fake high-frequency detail
+        padded = _crop_or_pad(channel, target_height, target_width, mode="edge")
         coeffs[name] = pywt.wavedec2(
             padded, wavelet=wavelet, level=channel_level, mode=DWT_MODE
         )
@@ -159,7 +161,9 @@ def encode_image_dwt(
     }
     header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
     payload = zlib.compress(b"".join(packed_chunks), 9)
-    return HEADER_STRUCT.pack(MAGIC, VERSION, len(header_bytes)) + header_bytes + payload
+    return (
+        HEADER_STRUCT.pack(MAGIC, VERSION, len(header_bytes)) + header_bytes + payload
+    )
 
 
 def decode_image_dwt(data: bytes) -> Image.Image:
@@ -194,11 +198,8 @@ def decode_image_dwt(data: bytes) -> Image.Image:
     offset = 0
     for spec in header["arrays"]:
         dtype = np.dtype(spec["dtype"])
-        shape = tuple(spec["shape"])
-        nbytes = int(np.prod(shape)) * dtype.itemsize
-        arrays.append(
-            np.frombuffer(payload[offset : offset + nbytes], dtype=dtype).reshape(shape)
-        )
+        nbytes = spec.get("nbytes", int(np.prod(spec["shape"])) * dtype.itemsize)
+        arrays.append(_unpack_coeff_array(spec, payload[offset : offset + nbytes]))
         offset += nbytes
 
     quantized = _unflatten_quantized(arrays, header["channels"], header["level"])
@@ -309,9 +310,7 @@ def _derive_channel_shapes(
     if color_space == "rgb":
         return {name: (height, width) for name in channels}
     chroma = _chroma_shape(orig_shape)
-    return {
-        name: (height, width) if name == "Y" else chroma for name in channels
-    }
+    return {name: (height, width) if name == "Y" else chroma for name in channels}
 
 
 def _parse_channel_shapes(
@@ -334,9 +333,7 @@ def _crop_or_pad(channel: np.ndarray, height: int, width: int) -> np.ndarray:
     return out
 
 
-def _resolve_level(
-    shape: tuple[int, ...], wavelet: str, level: Optional[int]
-) -> int:
+def _resolve_level(shape: tuple[int, ...], wavelet: str, level: Optional[int]) -> int:
     max_level = pywt.dwt_max_level(min(shape[:2]), pywt.Wavelet(wavelet).dec_len)
     max_level = max(1, max_level)
     if level is None:
@@ -346,10 +343,10 @@ def _resolve_level(
 
 def _subband_step(base_step: float, band_index: int, n_detail: int) -> float:
     if band_index == 0:
-        return max(base_step * 0.5, 1.0)
+        return max(base_step * 0.75, 1.0)
     # finer (later) detail bands get coarser quantization
     fineness = band_index / n_detail
-    return base_step * (1.0 + 1.5 * fineness)
+    return base_step * (1.0 + 3.0 * fineness)
 
 
 def _pack_int(values: np.ndarray) -> np.ndarray:
@@ -378,9 +375,7 @@ def _quantize_result(
         base = y_step if name in {"Y", "R", "G", "B"} else chroma_step
         arrays = _flatten_coeffs(coeffs)
         n_detail = max(len(arrays) - 1, 1)
-        channel_steps = [
-            _subband_step(base, i, n_detail) for i in range(len(arrays))
-        ]
+        channel_steps = [_subband_step(base, i, n_detail) for i in range(len(arrays))]
         quantized[name] = [
             _quantize_array(arr, step) for arr, step in zip(arrays, channel_steps)
         ]
@@ -447,3 +442,90 @@ def _unflatten_quantized(
         quantized[name] = arrays[cursor : cursor + n_arrays]
         cursor += n_arrays
     return quantized
+
+
+def _pack_coeff_array(arr: np.ndarray) -> tuple[bytes, dict]:
+    arr = np.ascontiguousarray(arr)  # ensure a single predictable copy to process below
+    flat = arr.ravel()
+    meta = {"shape": list(arr.shape), "dtype": arr.dtype.str}
+
+    nz_idx = np.flatnonzero(flat)
+    if nz_idx.size == 0:
+        meta.update(
+            encoding="sparse", nz_total=0, idx_dtype=np.dtype(np.uint16).str, nbytes=0
+        )
+        return b"", meta
+
+    if nz_idx.size < flat.size:
+        gaps = np.diff(nz_idx, prepend=0)
+        idx_dtype = np.uint16 if gaps.max() <= np.iinfo(np.uint16).max else np.uint32
+        gaps = gaps.astype(idx_dtype)
+        vals = flat[nz_idx]
+        if gaps.nbytes + vals.nbytes < flat.nbytes:
+            result = (
+                gaps.tobytes() + vals.tobytes()
+            )  # save 2 parts: indices & actual values
+            meta.update(
+                encoding="sparse",
+                nz_total=int(nz_idx.size),
+                idx_dtype=np.dtype(idx_dtype).str,
+                nbytes=len(result),
+            )
+            return result, meta
+
+    meta.update(encoding="dense", nbytes=flat.nbytes)
+    return flat.tobytes(), meta
+
+
+def _unpack_coeff_array(spec: dict, buf: bytes) -> np.ndarray:
+    dtype = np.dtype(spec["dtype"])
+    shape = tuple(spec["shape"])
+    if spec.get("encoding", "dense") == "dense":
+        return np.frombuffer(buf, dtype=dtype).reshape(shape)
+
+    out = np.zeros(int(np.prod(shape)), dtype=dtype)
+    nz_total = spec["nz_total"]
+    if nz_total:
+        idx_dtype = np.dtype(spec["idx_dtype"])
+        split = nz_total * idx_dtype.itemsize
+        idx = np.cumsum(
+            np.frombuffer(buf[:split], dtype=idx_dtype), dtype=np.int64
+        )  # decode the result of np.diff()
+        out[idx] = np.frombuffer(buf[split:], dtype=dtype)
+    return out.reshape(shape)
+
+
+def _crop_or_pad(
+    channel: np.ndarray, height: int, width: int, mode: str = "constant"
+) -> np.ndarray:
+    """
+    Crop or pad a 2D plane to exactly (height, width).
+
+    Args:
+        channel: 2D float plane.
+        height: Target rows.
+        width: Target columns.
+        mode: `np.pad` mode for growing the plane ("constant" = zeros,
+            "edge" = replicate border pixels).
+
+    Returns:
+        Plane of shape (height, width).
+    """
+
+    cropped = channel[:height, :width]
+    pad_rows = height - cropped.shape[0]
+    pad_cols = width - cropped.shape[1]
+    if pad_rows == 0 and pad_cols == 0:
+        return cropped
+    return np.pad(cropped, ((0, pad_rows), (0, pad_cols)), mode=mode)
+
+
+def _dyadic_shape(shape: tuple[int, int], level: int) -> tuple[int, int]:
+    """
+    Round a plane shape up to the next multiple of `2**level`.
+
+    Every decomposition level halves the size, so each must stay even.
+    """
+
+    block = 2**level
+    return tuple(-(-size // block) * block for size in shape)  # ceil to multiple
