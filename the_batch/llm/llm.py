@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
 import pydantic
 from langchain_community.llms.ollama import Ollama
 from langchain_core.prompts.prompt import PromptTemplate
@@ -14,6 +15,8 @@ from the_batch.batch_exceptions import (
     BatchLLMInitializationError,
 )
 from store.vectorstore import VectorStoreI
+from internals.dwt import load_signatures
+from internals.logger import logger
 
 
 @dataclass
@@ -98,6 +101,8 @@ class BatchLLM(pydantic.BaseModel):
                 for document in result.relevant_docs
                 if isinstance(document, ImageDocument)
             ]
+            signatures = load_signatures()
+            images = self._drop_near_duplicates(images, signatures)
             return BatchLLMResponse(
                 question=user_query, text_response=text_response, img_response=images
             )
@@ -105,3 +110,40 @@ class BatchLLM(pydantic.BaseModel):
             raise BatchLLMAnswerGenerationError(
                 f"BatchLLM failed to answer user query: {e}"
             )
+
+    def _drop_near_duplicates(
+        self,
+        candidates: list[ImageDocument],
+        signatures: dict[str, np.ndarray],
+        threshold: float = 0.95,
+    ) -> list[ImageDocument]:
+        """
+        Drop candidates whose signature is too similar to an already-kept one.
+
+        Args:
+            candidates: Retrieved image documents, best first.
+            signatures: Image document ID to unit-length wavelet signature.
+            threshold: Cosine similarity at or above which two images are duplicates.
+
+        Returns:
+            Candidates without near-duplicates, original order preserved.
+        """
+
+        kept: list[ImageDocument] = []
+        logger.info(f"Size of candidates: {len(candidates)}")  # TODO: remove after testing
+        logger.info(f"Candidates ID's: {[cand.id for cand in candidates]}")
+        for candidate in candidates:
+            candidate_signature = signatures.get(candidate.id)
+            if candidate_signature is None:  # nothing to compare against: keep it
+                kept.append(candidate)
+                continue
+            is_duplicate = any(
+                signatures[kept_doc.id] @ candidate_signature >= threshold
+                for kept_doc in kept
+                if kept_doc.id in signatures
+            )
+            if not is_duplicate:
+                kept.append(candidate)
+        logger.info(f"Size of kept: {len(kept)}")
+        logger.info(f"Kept ID's: {[cand.id for cand in kept]}")
+        return kept

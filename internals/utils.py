@@ -114,3 +114,8 @@ def generate_unique_doc_id(content: str, metadata: Optional[dict] = None) -> str
     hash = hashlib.sha256(combined.encode("utf-8")).hexdigest()
     salt = str(uuid.uuid4())
     return f"{hash}-{salt}"
+
+
+def content_hash(image_bytes: bytes) -> str:
+    """SHA-256 hex digest of the raw downloaded bytes (exact-duplicate key)."""
+    return hashlib.sha256(image_bytes).hexdigest()

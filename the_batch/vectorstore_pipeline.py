@@ -8,6 +8,7 @@ from the_batch.batch_config import (
     COLLECTION_NAME,
     THE_BATCH_VECTORESTORE_PERSIST_DIR,
     CREATE_VECTORESTORE,
+    BATCH_ENDPOINT
 )
 from schema.documents import ImageDocument
 from store.chroma import ChromaVectorStore
@@ -16,6 +17,7 @@ from internals.utils import save_img_docs
 from internals.adapters import ChromaVectorStoreAdapter
 from the_batch.preprocessing.batch_data_loader import BatchDataLoader
 from the_batch.preprocessing.batch_preprocessor import TheBatchPreprocessor
+from internals.dwt import save_signatures
 
 
 def create_batch_vectorstore():
@@ -35,20 +37,22 @@ def create_batch_vectorstore():
         img_urls = [img["src"] for img in data.images]
 
         prep_document = preprocessor.preprocess(
-            img_urls=img_urls, elements=data.get_all(), source_url=data.url
+            img_urls=img_urls, elements=data.get_all(), source_url=f"{BATCH_ENDPOINT}{data.url}"
         )
         documents.extend(prep_document)
 
     # save image documents
     img_documents = {doc.id: doc for doc in documents if isinstance(doc, ImageDocument)}
     save_img_docs(img_documents, THE_BATCH_IMAGE_DOCUMENTS_STORE)
+    img_map = {doc.id: doc.image for doc in documents if isinstance(doc, ImageDocument)}
+    save_signatures(img_map)
 
     # embed documents
     embeddings_adapter = ChromaVectorStoreAdapter(
         embedding_func=SentenceTransformerTextEmbedding()
     )
     embeddings = np.vstack(
-        [embeddings_adapter.embed_query(doc.content) for doc in documents]  # TODO: use dwt coeffs
+        [embeddings_adapter.embed_query(doc.content) for doc in documents]
     )
 
     # create vectorstore and add documents
