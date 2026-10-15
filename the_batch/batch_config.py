@@ -16,7 +16,7 @@ THE_BATCH_VECTORESTORE_PERSIST_DIR = (
     BASE_DIR / "store" / "the_batch_vectorestore_persist_dir"
 ).as_posix()
 THE_BATCH_IMAGE_DOCUMENTS_STORE = (
-    BASE_DIR / "store" / "the_batch_image_documents_store.json"
+    BASE_DIR / "store" / "the_batch_image_documents"
 ).as_posix()
 
 BATCH_ENDPOINT = "https://www.deeplearning.ai"

@@ -4,10 +4,10 @@ import streamlit as st
 
 from the_batch.llm.llm_configured import batch_llm
 from internals.logger import logger
-from internals.utils import load_img_docs_from_json
+from internals.utils import load_img_docs
 from the_batch.batch_config import THE_BATCH_IMAGE_DOCUMENTS_STORE
 
-img_documents = load_img_docs_from_json(THE_BATCH_IMAGE_DOCUMENTS_STORE)
+img_documents = load_img_docs(THE_BATCH_IMAGE_DOCUMENTS_STORE)
 
 
 def main():

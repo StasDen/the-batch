@@ -8,7 +8,7 @@ from io import BytesIO
 import pydantic
 from PIL import Image
 
-from internals.utils import validate_dtypes
+from internals.utils import validate_dtypes, content_hash
 from data.fetch import HttpxFetcher
 from internals.logger import logger
 from exceptions.fetch import FetchError
@@ -57,6 +57,7 @@ class HttpxImageLoader(pydantic.BaseModel, ImageLoaderI):
 
     model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
     fetcher: HttpxFetcher = pydantic.Field(default_factory=HttpxFetcher)
+    seen_hashes: set[str] = pydantic.Field(default_factory=set)  # digests of images already loaded
 
     @override
     def load(
@@ -67,7 +68,7 @@ class HttpxImageLoader(pydantic.BaseModel, ImageLoaderI):
         headers: Optional[dict] = None,
         cookies: Optional[dict] = None,
         metadata: Optional[dict] = None,
-    ) -> LoadedImage:
+    ) -> Optional[LoadedImage]:
         """
         Load an image from a given URL.
 
@@ -115,9 +116,14 @@ class HttpxImageLoader(pydantic.BaseModel, ImageLoaderI):
                     return None
                 raise FetchError(msg)
 
-            image = LoadedImage(
-                url=img_url, image=Image.open(BytesIO(result.response.content))
-            )
+            img_bytes = result.response.content
+            digest = content_hash(img_bytes)
+            if digest in self.seen_hashes:
+                logger.info("Skipping already downloaded image...")
+                return None
+            self.seen_hashes.add(digest)
+
+            image = LoadedImage(url=img_url, image=Image.open(BytesIO(img_bytes)))
             logger.info("Successfully loaded new image")
             return image
         except Exception as e:
